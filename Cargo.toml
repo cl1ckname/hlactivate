@@ -13,3 +13,10 @@ smithay-client-toolkit = { version = "0.21.1", default-features = false }
 tiny-skia = "0.12.0"
 toml = "1.1.8"
 wayland-client = "0.31.15"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

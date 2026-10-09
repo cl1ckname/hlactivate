@@ -75,7 +75,7 @@ fn main() -> Result<()> {
         layer_shell,
         shm,
         pool,
-        text: TextRenderer::new(),
+        text: TextRenderer::new(&config.font, config.lang),
         config,
         size: (0, 0),
         widgets: Vec::new(),
@@ -208,6 +208,7 @@ impl App {
     fn reload(&mut self, qh: &QueueHandle<Self>) {
         match config::load() {
             Ok(config) => {
+                self.text = TextRenderer::new(&config.font, config.lang);
                 self.config = config;
                 self.update_size();
             }

@@ -42,6 +42,13 @@ pub enum Lang {
 }
 
 impl Lang {
+    pub fn code(self) -> &'static str {
+        match self {
+            Lang::Eng => "en",
+            Lang::Ru => "ru",
+        }
+    }
+
     fn texts(self) -> &'static [&'static str] {
         match self {
             Lang::Eng => &["Activate Linux", "Go to Settings to activate Linux."],

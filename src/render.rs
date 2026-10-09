@@ -1,26 +1,38 @@
-use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache};
+use std::{path::PathBuf, process::Command};
+
+use cosmic_text::{
+    Attrs, Buffer, Family, FamilyOwned, FontSystem, Metrics, Shaping, SwashCache, fontdb,
+};
 use tiny_skia::{Paint, Pixmap, Rect, Transform};
 
-use crate::config::Config;
+use crate::config::{Config, Lang};
 
 pub struct TextRenderer {
     font_system: FontSystem,
     swash_cache: SwashCache,
+    family: FamilyOwned,
 }
 
 impl TextRenderer {
-    pub fn new() -> Self {
+    pub fn new(font: &str, lang: Lang) -> Self {
+        let (font_system, family) = match load_single_font(font, lang) {
+            Some(loaded) => loaded,
+            None => {
+                eprintln!("не удалось найти шрифт через fc-match, загружаю все системные");
+                (FontSystem::new(), FamilyOwned::new(generic_family(font)))
+            }
+        };
         Self {
-            font_system: FontSystem::new(),
+            font_system,
             swash_cache: SwashCache::new(),
+            family,
         }
     }
 
     pub fn measure(&mut self, config: &Config) -> (f32, f32) {
-        let family = family(&config.font);
         let (mut width, mut height) = (0.0f32, 0.0f32);
         for line in &config.lines {
-            let mut buffer = line_buffer(&line.text, family, line.size);
+            let mut buffer = self.line_buffer(&line.text, line.size);
             buffer.shape_until_scroll(&mut self.font_system, false);
             let line_w = buffer
                 .layout_runs()
@@ -34,12 +46,10 @@ impl TextRenderer {
 
     pub fn render(&mut self, width: u32, height: u32, scale: f32, config: &Config) -> Pixmap {
         let mut pixmap = Pixmap::new(width, height).expect("нулевой размер");
-        let family = family(&config.font);
         for line in &config.lines {
             self.draw_line(
                 &mut pixmap,
                 &line.text,
-                family,
                 config.color.0,
                 line.size * scale,
                 line.x * scale,
@@ -49,19 +59,17 @@ impl TextRenderer {
         pixmap
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_line(
         &mut self,
         pixmap: &mut Pixmap,
         text: &str,
-        family: Family,
         color: cosmic_text::Color,
         size: f32,
         x: f32,
         y: f32,
     ) {
         let (x, y) = (x.round() as i32, y.round() as i32);
-        let mut buffer = line_buffer(text, family, size);
+        let mut buffer = self.line_buffer(text, size);
 
         let mut paint = Paint::default();
         let text_alpha = u16::from(color.a());
@@ -81,20 +89,58 @@ impl TextRenderer {
             },
         );
     }
+
+    fn line_buffer(&self, text: &str, size: f32) -> Buffer {
+        let mut buffer = Buffer::new_empty(Metrics::new(size, line_height(size)));
+        buffer.set_size(None, None);
+        let attrs = Attrs::new().family(self.family.as_family());
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer
+    }
 }
 
 fn line_height(size: f32) -> f32 {
     size * 1.2
 }
 
-fn line_buffer(text: &str, family: Family, size: f32) -> Buffer {
-    let mut buffer = Buffer::new_empty(Metrics::new(size, line_height(size)));
-    buffer.set_size(None, None);
-    buffer.set_text(text, &Attrs::new().family(family), Shaping::Advanced, None);
-    buffer
+fn load_single_font(font: &str, lang: Lang) -> Option<(FontSystem, FamilyOwned)> {
+    let (path, family) = fc_match(font, lang)?;
+    let mut db = fontdb::Database::new();
+    if db
+        .load_font_source(fontdb::Source::File(path.clone()))
+        .is_empty()
+    {
+        return None;
+    }
+    println!("шрифт: {family} ({})", path.display());
+    let font_system = FontSystem::new_with_locale_and_db(lang.code().into(), db);
+    Some((font_system, FamilyOwned::new(Family::Name(&family))))
 }
 
-fn family(name: &str) -> Family<'_> {
+fn fc_match(font: &str, lang: Lang) -> Option<(PathBuf, String)> {
+    let mut pattern = String::new();
+    for c in font.chars() {
+        if matches!(c, '\\' | '-' | ':' | ',') {
+            pattern.push('\\');
+        }
+        pattern.push(c);
+    }
+    pattern.push_str(":lang=");
+    pattern.push_str(lang.code());
+
+    let output = Command::new("fc-match")
+        .args(["--format", "%{file}\n%{family[0]}", &pattern])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let (file, family) = stdout.split_once('\n')?;
+    Some((file.into(), family.into()))
+}
+
+fn generic_family(name: &str) -> Family<'_> {
     match name {
         "sans-serif" | "sans" => Family::SansSerif,
         "serif" => Family::Serif,
@@ -117,19 +163,11 @@ mod tests {
 
     #[test]
     fn text_alpha_is_applied() {
-        let mut renderer = TextRenderer::new();
+        let mut renderer = TextRenderer::new("sans-serif", Lang::Eng);
         for alpha in [0x40, 0x80, 0xff] {
             let mut pixmap = Pixmap::new(200, 40).unwrap();
             let color = cosmic_text::Color::rgba(255, 255, 255, alpha);
-            renderer.draw_line(
-                &mut pixmap,
-                "Activate",
-                Family::SansSerif,
-                color,
-                24.0,
-                0.0,
-                0.0,
-            );
+            renderer.draw_line(&mut pixmap, "Activate", color, 24.0, 0.0, 0.0);
             let max = pixmap.pixels().iter().map(|p| p.alpha()).max().unwrap();
             assert_eq!(max, alpha, "альфа цвета {alpha:#x}");
         }
