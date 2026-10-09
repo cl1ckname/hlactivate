@@ -127,7 +127,6 @@ fn load_single_font(font: &str, lang: Lang) -> Option<(FontSystem, FamilyOwned)>
     {
         return None;
     }
-    println!("шрифт: {family} ({})", path.display());
     let font_system = FontSystem::new_with_locale_and_db(lang.code().into(), db);
     Some((font_system, FamilyOwned::new(Family::Name(&family))))
 }

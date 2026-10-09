@@ -149,21 +149,17 @@ pub fn path() -> Option<PathBuf> {
 pub fn load() -> Result<Config> {
     let mut table: Table = toml::from_str(DEFAULT).expect("вшитый default.toml некорректен");
 
-    if let Some(path) = path() {
-        if path.exists() {
-            let text = fs::read_to_string(&path)
-                .with_context(|| format!("не удалось прочитать {}", path.display()))?;
-            let user: Table = toml::from_str(&text)
-                .with_context(|| format!("ошибка синтаксиса в {}", path.display()))?;
-            merge(&mut table, user);
-            println!("конфиг: {}", path.display());
-        } else {
-            println!("{} нет, использую встроенный конфиг", path.display());
-        }
+    if let Some(path) = path()
+        && path.exists()
+    {
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("не удалось прочитать {}", path.display()))?;
+        let user: Table = toml::from_str(&text)
+            .with_context(|| format!("ошибка синтаксиса в {}", path.display()))?;
+        merge(&mut table, user);
     }
 
     let config = build(table).context("ошибка в конфиге")?;
-    println!("{config:#?}");
     Ok(config)
 }
 

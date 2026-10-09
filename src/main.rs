@@ -98,14 +98,8 @@ fn main() -> Result<()> {
     let signals = Signals::new(&[Signal::SIGINT, Signal::SIGTERM, Signal::SIGUSR1])?;
     handle
         .insert_source(signals, move |event, _, app| match event.signal() {
-            Signal::SIGUSR1 => {
-                println!("SIGUSR1: перечитываю конфиг");
-                app.reload(&qh);
-            }
-            sig => {
-                println!("{sig:?}: выходим");
-                app.exit = true;
-            }
+            Signal::SIGUSR1 => app.reload(&qh),
+            _ => app.exit = true,
         })
         .map_err(|e| anyhow::anyhow!("не удалось добавить сигналы в цикл: {}", e.error))?;
 
@@ -220,25 +214,13 @@ fn surface_size(config: &Config, text: &mut TextRenderer) -> Result<(u32, u32)> 
         side(config.width, text_w, "ширина")?,
         side(config.height, text_h, "высота")?,
     );
-    println!(
-        "текст {text_w:.1}×{text_h:.1}, поверхность {}×{}",
-        size.0, size.1
-    );
     Ok(size)
 }
 
 impl App {
-    fn output_name(&self, output: &wl_output::WlOutput) -> String {
-        self.output_state
-            .info(output)
-            .and_then(|info| info.name)
-            .unwrap_or_else(|| "?".into())
-    }
-
     fn add_widget(&mut self, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         let name = self.output_state.info(&output).and_then(|info| info.name);
         if !self.config.wants_output(name.as_deref()) {
-            println!("  пропускаю: нет в outputs");
             return;
         }
         match Widget::new(self, qh, output) {
@@ -290,7 +272,6 @@ impl OutputHandler for App {
     }
 
     fn new_output(&mut self, _: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
-        println!("монитор подключён: {}", self.output_name(&output));
         self.add_widget(qh, output);
     }
 
@@ -302,7 +283,6 @@ impl OutputHandler for App {
         _: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
-        println!("монитор отключён: {}", self.output_name(&output));
         self.widgets.retain(|w| w.output != output);
     }
 }
@@ -315,7 +295,6 @@ impl CompositorHandler for App {
         surface: &wl_surface::WlSurface,
         new_factor: i32,
     ) {
-        println!("scale -> {new_factor}");
         if let Some(widget) = self
             .widgets
             .iter_mut()
@@ -354,7 +333,6 @@ impl CompositorHandler for App {
 
 impl LayerShellHandler for App {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
-        println!("closed");
         self.widgets.retain(|w| &w.layer != layer);
     }
 
@@ -364,9 +342,8 @@ impl LayerShellHandler for App {
         _: &QueueHandle<Self>,
         layer: &LayerSurface,
         configure: LayerSurfaceConfigure,
-        serial: u32,
+        _: u32,
     ) {
-        println!("configure serial={serial} size={:?}", configure.new_size);
         let Some(widget) = self.widgets.iter_mut().find(|w| &w.layer == layer) else {
             return;
         };
