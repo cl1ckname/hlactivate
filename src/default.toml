@@ -1,0 +1,49 @@
+# "Activate Linux" widget config.
+#
+# Any key can be removed — the default value will be used instead
+# (this very file is embedded into the binary). Reload without restarting:
+#   pkill -USR1 hlactivate
+
+# Layer: "background" | "bottom" | "top" | "overlay".
+# "bottom" — above the wallpaper, below windows (visible only on an empty desktop).
+# "overlay" — above everything, like the real Windows one.
+layer = "bottom"
+
+# Monitors to show the widget on, e.g. ["eDP-1", "HDMI-A-1"].
+# Empty list — all monitors. Names: `hyprctl monitors`.
+outputs = []
+
+# Monitor edges to anchor the widget to: "top", "bottom", "left", "right".
+anchor = ["bottom", "right"]
+
+# Widget area size in logical pixels. If not set, it is computed from the
+# text: the area exactly fits all lines, so the margins below are measured
+# from the edge of the text.
+# width = 360
+# height = 90
+
+# Margins from the edges: [top, right, bottom, left].
+margin = [0, 50, 20, 0]
+
+# Font family: "sans-serif", "serif", "monospace" or a name, e.g. "Inter".
+font = "sans-serif"
+
+# Text color: "#RRGGBB" or "#RRGGBBAA".
+color = "#ffffffbc"
+
+# Widget language: "eng" or "ru".
+lang = "eng"
+
+# Text lines. x, y — top-left corner of the line inside the area,
+# size — font size; all in logical pixels.
+# text — custom line text. If not set, the translation for lang is used:
+# the first line is the title, the second one is the subtitle.
+[[lines]]
+size = 24
+x = 0
+y = 12
+
+[[lines]]
+size = 15
+x = 0
+y = 46
