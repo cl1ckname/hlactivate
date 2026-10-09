@@ -20,6 +20,14 @@ To start the widget with Hyprland, add to `hyprland.conf`:
 exec-once = ~/.local/bin/hlactivate
 ```
 
+or
+
+```lua
+hl.exec_cmd("hlactivate")
+```
+
+if you are using `hyprland.lua`.
+
 ## Configuration
 
 The default config is embedded into the binary. To override it, create `$XDG_CONFIG_HOME/hlactivate.toml` (usually `~/.config/hlactivate.toml`). You only need the keys you want to change, because missing keys fall back to the defaults. Reload the config without restarting:
