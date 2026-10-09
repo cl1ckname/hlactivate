@@ -1,13 +1,13 @@
 mod config;
 mod render;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use calloop::{
     EventLoop,
     signals::{Signal, Signals},
 };
 use calloop_wayland_source::WaylandSource;
-use config::Config;
+use config::{Config, MAX_SIZE};
 use render::TextRenderer;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
@@ -29,6 +29,9 @@ use wayland_client::{
     globals::registry_queue_init,
     protocol::{wl_output, wl_shm, wl_surface},
 };
+
+const MAX_SCALE: i32 = 16;
+const MAX_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 
 struct Widget {
     output: wl_output::WlOutput,
@@ -68,6 +71,9 @@ fn main() -> Result<()> {
 
     let pool = SlotPool::new(4096, &shm).context("не удалось создать shm-пул")?;
 
+    let mut text = TextRenderer::new(&config.font, config.lang);
+    let size = surface_size(&config, &mut text)?;
+
     let mut app = App {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
@@ -75,13 +81,12 @@ fn main() -> Result<()> {
         layer_shell,
         shm,
         pool,
-        text: TextRenderer::new(&config.font, config.lang),
+        text,
         config,
-        size: (0, 0),
+        size,
         widgets: Vec::new(),
         exit: false,
     };
-    app.update_size();
 
     let mut event_loop = EventLoop::<App>::try_new().context("не удалось создать цикл событий")?;
     let handle = event_loop.handle();
@@ -150,15 +155,22 @@ impl Widget {
     }
 
     fn draw(&mut self, pool: &mut SlotPool, text: &mut TextRenderer, config: &Config) {
-        let (width, height) = (
-            self.width as i32 * self.scale,
-            self.height as i32 * self.scale,
-        );
-        let stride = width * 4;
+        let Some((width, height, stride)) = buffer_dims(self.width, self.height, self.scale) else {
+            eprintln!(
+                "буфер {}×{} при scale {} слишком большой, пропускаю кадр",
+                self.width, self.height, self.scale
+            );
+            return;
+        };
 
-        let (buffer, canvas) = pool
-            .create_buffer(width, height, stride, wl_shm::Format::Argb8888)
-            .expect("не удалось создать буфер");
+        let (buffer, canvas) =
+            match pool.create_buffer(width, height, stride, wl_shm::Format::Argb8888) {
+                Ok(created) => created,
+                Err(err) => {
+                    eprintln!("не удалось создать буфер: {err}");
+                    return;
+                }
+            };
 
         text.render(
             canvas,
@@ -171,11 +183,48 @@ impl Widget {
         let surface = self.layer.wl_surface();
         surface.set_buffer_scale(self.scale);
         surface.damage_buffer(0, 0, width, height);
-        buffer
-            .attach_to(surface)
-            .expect("не удалось прикрепить буфер");
+        if let Err(err) = buffer.attach_to(surface) {
+            eprintln!("не удалось прикрепить буфер: {err}");
+            return;
+        }
         self.layer.commit();
     }
+}
+
+fn buffer_dims(width: u32, height: u32, scale: i32) -> Option<(i32, i32, i32)> {
+    if !(1..=MAX_SCALE).contains(&scale) {
+        return None;
+    }
+    let width = i32::try_from(width).ok()?.checked_mul(scale)?;
+    let height = i32::try_from(height).ok()?.checked_mul(scale)?;
+    let stride = width.checked_mul(4)?;
+    let bytes = usize::try_from(stride)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?;
+    (width > 0 && height > 0 && bytes <= MAX_BUFFER_BYTES).then_some((width, height, stride))
+}
+
+fn surface_size(config: &Config, text: &mut TextRenderer) -> Result<(u32, u32)> {
+    let (text_w, text_h) = text.measure(config);
+    let side = |fixed: Option<u32>, measured: f32, name: &str| -> Result<u32> {
+        if let Some(v) = fixed {
+            return Ok(v);
+        }
+        let v = measured.ceil();
+        if !(v.is_finite() && v <= MAX_SIZE as f32) {
+            bail!("текст не помещается: {name} {measured} больше {MAX_SIZE}");
+        }
+        Ok((v as u32).max(1))
+    };
+    let size = (
+        side(config.width, text_w, "ширина")?,
+        side(config.height, text_h, "высота")?,
+    );
+    println!(
+        "текст {text_w:.1}×{text_h:.1}, поверхность {}×{}",
+        size.0, size.1
+    );
+    Ok(size)
 }
 
 impl App {
@@ -198,24 +247,17 @@ impl App {
         }
     }
 
-    fn update_size(&mut self) {
-        let (text_w, text_h) = self.text.measure(&self.config);
-        self.size = (
-            self.config.width.unwrap_or(text_w.ceil() as u32).max(1),
-            self.config.height.unwrap_or(text_h.ceil() as u32).max(1),
-        );
-        println!(
-            "текст {text_w:.1}×{text_h:.1}, поверхность {}×{}",
-            self.size.0, self.size.1
-        );
-    }
-
     fn reload(&mut self, qh: &QueueHandle<Self>) {
-        match config::load() {
-            Ok(config) => {
-                self.text = TextRenderer::new(&config.font, config.lang);
+        let loaded = config::load().and_then(|config| {
+            let mut text = TextRenderer::new(&config.font, config.lang);
+            let size = surface_size(&config, &mut text)?;
+            Ok((config, text, size))
+        });
+        match loaded {
+            Ok((config, text, size)) => {
                 self.config = config;
-                self.update_size();
+                self.text = text;
+                self.size = size;
             }
             Err(err) => {
                 eprintln!("{err:#}\nоставляю старый конфиг");
@@ -355,3 +397,45 @@ impl ProvidesRegistryState for App {
 
 delegate_registry!(App);
 smithay_client_toolkit::delegate_dispatch2!(App);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffer_dims_normal() {
+        assert_eq!(buffer_dims(243, 64, 2), Some((486, 128, 1944)));
+        assert_eq!(buffer_dims(1, 1, 1), Some((1, 1, 4)));
+    }
+
+    #[test]
+    fn buffer_dims_rejects_overflow_and_limits() {
+        for (w, h, scale) in [
+            (u32::MAX, 1, 1),
+            (1, u32::MAX, 1),
+            (i32::MAX as u32, 1, 2),
+            (600_000_000, 1, 1),
+            (100_000, 100_000, 1),
+            (8192, 8192, 1),
+            (0, 10, 1),
+            (10, 0, 1),
+            (10, 10, 0),
+            (10, 10, -1),
+            (10, 10, MAX_SCALE + 1),
+        ] {
+            assert_eq!(buffer_dims(w, h, scale), None, "{w}×{h} scale {scale}");
+        }
+    }
+
+    #[test]
+    fn surface_size_rejects_too_long_text() {
+        let mut config = config::parse("").unwrap();
+        let mut text = TextRenderer::new(&config.font, config.lang);
+        assert_eq!(surface_size(&config, &mut text).unwrap(), (243, 64));
+        config.lines[0].text = "Activate Linux ".repeat(1000);
+        assert!(surface_size(&config, &mut text).is_err());
+        config.width = Some(500);
+        config.lines[0].text = "Activate Linux".into();
+        assert_eq!(surface_size(&config, &mut text).unwrap().0, 500);
+    }
+}

@@ -31,16 +31,24 @@ impl TextRenderer {
     pub fn measure(&mut self, config: &Config) -> (f32, f32) {
         let (mut width, mut height) = (0.0f32, 0.0f32);
         for line in &config.lines {
-            let mut buffer = self.line_buffer(&line.text, line.size);
-            buffer.shape_until_scroll(&mut self.font_system, false);
-            let line_w = buffer
-                .layout_runs()
-                .map(|run| run.line_w)
-                .fold(0.0, f32::max);
-            width = width.max(line.x + line_w);
-            height = height.max(line.y + line_height(line.size));
+            let (text_w, text_h) = self.measure_text(&line.text, line.size);
+            width = width.max(line.x + text_w);
+            height = height.max(line.y + text_h);
         }
         (width, height)
+    }
+
+    fn measure_text(&mut self, text: &str, size: f32) -> (f32, f32) {
+        let mut buffer = self.line_buffer(text, size);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+        buffer
+            .layout_runs()
+            .fold((0.0f32, 0.0f32), |(width, height), run| {
+                (
+                    width.max(run.line_w),
+                    height.max(run.line_top + run.line_height),
+                )
+            })
     }
 
     pub fn render(
@@ -83,7 +91,16 @@ impl TextRenderer {
             color,
             |gx, gy, w, h, color| {
                 let alpha = mul(color.a(), text_alpha);
-                canvas.fill_rect(x + gx, y + gy, w, h, color.r(), color.g(), color.b(), alpha);
+                canvas.fill_rect(
+                    x.saturating_add(gx),
+                    y.saturating_add(gy),
+                    w,
+                    h,
+                    color.r(),
+                    color.g(),
+                    color.b(),
+                    alpha,
+                );
             },
         );
     }
@@ -156,7 +173,7 @@ struct Canvas<'a> {
 impl<'a> Canvas<'a> {
     fn new(data: &'a mut [u8], width: u32, height: u32) -> Self {
         let (pixels, _) = data.as_chunks_mut::<4>();
-        let pixels = &mut pixels[..(width * height) as usize];
+        let pixels = &mut pixels[..width as usize * height as usize];
         pixels.fill([0; 4]);
         Self {
             pixels,
@@ -167,22 +184,30 @@ impl<'a> Canvas<'a> {
 
     #[allow(clippy::too_many_arguments)]
     fn fill_rect(&mut self, x: i32, y: i32, w: u32, h: u32, r: u8, g: u8, b: u8, a: u8) {
-        if a == 0 {
+        let (x0, x1) = clip(x, w, self.width);
+        let (y0, y1) = clip(y, h, self.height);
+        if a == 0 || x0 >= x1 || y0 >= y1 {
             return;
         }
         let src = [mul(b, a), mul(g, a), mul(r, a), a];
         let inv = 255 - a;
-        let (x0, x1) = (x.max(0), (x + w as i32).min(self.width));
-        let (y0, y1) = (y.max(0), (y + h as i32).min(self.height));
+        let width = self.width as usize;
         for py in y0..y1 {
-            let row = (py * self.width) as usize;
-            for dst in &mut self.pixels[row + x0 as usize..row + x1.max(x0) as usize] {
+            let row = py * width;
+            for dst in &mut self.pixels[row + x0..row + x1] {
                 for c in 0..4 {
                     dst[c] = src[c].saturating_add(mul(dst[c], inv));
                 }
             }
         }
     }
+}
+
+fn clip(start: i32, len: u32, limit: i32) -> (usize, usize) {
+    let limit = i64::from(limit);
+    let start = i64::from(start);
+    let end = start + i64::from(len);
+    (start.clamp(0, limit) as usize, end.clamp(0, limit) as usize)
 }
 
 fn mul(a: u8, b: u8) -> u8 {
@@ -192,6 +217,55 @@ fn mul(a: u8, b: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rects_outside_canvas_are_clipped() {
+        let mut data = vec![0u8; 10 * 4 * 4];
+        let mut canvas = Canvas::new(&mut data, 10, 4);
+        for (x, y) in [
+            (12, 3),
+            (10, 3),
+            (-5, 3),
+            (3, 4),
+            (3, -1),
+            (i32::MAX, 0),
+            (i32::MIN, 0),
+        ] {
+            canvas.fill_rect(x, y, 2, 1, 255, 255, 255, 255);
+        }
+        canvas.fill_rect(9, 3, 5, 5, 255, 255, 255, 255);
+        canvas.fill_rect(-1, -1, 2, 2, 255, 255, 255, 255);
+        let opaque: Vec<usize> = data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p[3] != 0)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(opaque, [0, 39]);
+    }
+
+    #[test]
+    fn text_past_right_edge_does_not_panic() {
+        let mut renderer = TextRenderer::new("sans-serif", Lang::Eng);
+        let mut data = vec![0u8; 20 * 30 * 4];
+        let mut canvas = Canvas::new(&mut data, 20, 30);
+        let color = cosmic_text::Color::rgba(255, 255, 255, 255);
+        renderer.draw_line(&mut canvas, "Activate Linux", color, 24.0, 0.0, 0.0);
+        renderer.draw_line(&mut canvas, "Activate Linux", color, 24.0, 500.0, 0.0);
+    }
+
+    #[test]
+    fn multiline_text_height() {
+        let mut renderer = TextRenderer::new("sans-serif", Lang::Eng);
+        let (_, one) = renderer.measure_text("Hello", 24.0);
+        let (_, two) = renderer.measure_text("Hello\nWorld", 24.0);
+        let (_, three) = renderer.measure_text("a\nb\nc", 24.0);
+        for (got, want) in [(one, 28.8), (two, 57.6), (three, 86.4)] {
+            assert!((got - want).abs() < 0.01, "высота {got}, ожидалось {want}");
+        }
+    }
 
     #[test]
     fn text_alpha_is_applied() {
