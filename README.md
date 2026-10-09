@@ -1,5 +1,7 @@
 # hlactivate
 
+![hlactivate on a desktop](assets/social-preview.png)
+
 A tiny joke widget for Wayland desktops: the famous "Activate Windows" watermark, but for Hyprland.
 
 ## Installation
