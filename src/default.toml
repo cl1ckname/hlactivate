@@ -38,6 +38,7 @@ lang = "eng"
 # size — font size; all in logical pixels.
 # text — custom line text. If not set, the translation for lang is used:
 # the first line is the title, the second one is the subtitle.
+# Defining lines in your config replaces the whole list.
 [[lines]]
 size = 24
 x = 0
