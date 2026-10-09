@@ -160,8 +160,13 @@ impl Widget {
             .create_buffer(width, height, stride, wl_shm::Format::Argb8888)
             .expect("не удалось создать буфер");
 
-        let pixmap = text.render(width as u32, height as u32, self.scale as f32, config);
-        render::copy_to_argb8888(&pixmap, canvas);
+        text.render(
+            canvas,
+            width as u32,
+            height as u32,
+            self.scale as f32,
+            config,
+        );
 
         let surface = self.layer.wl_surface();
         surface.set_buffer_scale(self.scale);

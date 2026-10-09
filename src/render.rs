@@ -3,7 +3,6 @@ use std::{path::PathBuf, process::Command};
 use cosmic_text::{
     Attrs, Buffer, Family, FamilyOwned, FontSystem, Metrics, Shaping, SwashCache, fontdb,
 };
-use tiny_skia::{Paint, Pixmap, Rect, Transform};
 
 use crate::config::{Config, Lang};
 
@@ -44,11 +43,18 @@ impl TextRenderer {
         (width, height)
     }
 
-    pub fn render(&mut self, width: u32, height: u32, scale: f32, config: &Config) -> Pixmap {
-        let mut pixmap = Pixmap::new(width, height).expect("нулевой размер");
+    pub fn render(
+        &mut self,
+        data: &mut [u8],
+        width: u32,
+        height: u32,
+        scale: f32,
+        config: &Config,
+    ) {
+        let mut canvas = Canvas::new(data, width, height);
         for line in &config.lines {
             self.draw_line(
-                &mut pixmap,
+                &mut canvas,
                 &line.text,
                 config.color.0,
                 line.size * scale,
@@ -56,12 +62,11 @@ impl TextRenderer {
                 line.y * scale,
             );
         }
-        pixmap
     }
 
     fn draw_line(
         &mut self,
-        pixmap: &mut Pixmap,
+        canvas: &mut Canvas,
         text: &str,
         color: cosmic_text::Color,
         size: f32,
@@ -71,21 +76,14 @@ impl TextRenderer {
         let (x, y) = (x.round() as i32, y.round() as i32);
         let mut buffer = self.line_buffer(text, size);
 
-        let mut paint = Paint::default();
-        let text_alpha = u16::from(color.a());
+        let text_alpha = color.a();
         buffer.draw(
             &mut self.font_system,
             &mut self.swash_cache,
             color,
             |gx, gy, w, h, color| {
-                let alpha = (u16::from(color.a()) * text_alpha + 127) / 255;
-                paint.set_color_rgba8(color.r(), color.g(), color.b(), alpha as u8);
-                let Some(rect) =
-                    Rect::from_xywh((x + gx) as f32, (y + gy) as f32, w as f32, h as f32)
-                else {
-                    return;
-                };
-                pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+                let alpha = mul(color.a(), text_alpha);
+                canvas.fill_rect(x + gx, y + gy, w, h, color.r(), color.g(), color.b(), alpha);
             },
         );
     }
@@ -149,12 +147,46 @@ fn generic_family(name: &str) -> Family<'_> {
     }
 }
 
-pub fn copy_to_argb8888(pixmap: &Pixmap, canvas: &mut [u8]) {
-    let (src, _) = pixmap.data().as_chunks::<4>();
-    let (dst, _) = canvas.as_chunks_mut::<4>();
-    for (&[r, g, b, a], dst) in src.iter().zip(dst) {
-        *dst = [b, g, r, a];
+struct Canvas<'a> {
+    pixels: &'a mut [[u8; 4]],
+    width: i32,
+    height: i32,
+}
+
+impl<'a> Canvas<'a> {
+    fn new(data: &'a mut [u8], width: u32, height: u32) -> Self {
+        let (pixels, _) = data.as_chunks_mut::<4>();
+        let pixels = &mut pixels[..(width * height) as usize];
+        pixels.fill([0; 4]);
+        Self {
+            pixels,
+            width: width as i32,
+            height: height as i32,
+        }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fill_rect(&mut self, x: i32, y: i32, w: u32, h: u32, r: u8, g: u8, b: u8, a: u8) {
+        if a == 0 {
+            return;
+        }
+        let src = [mul(b, a), mul(g, a), mul(r, a), a];
+        let inv = 255 - a;
+        let (x0, x1) = (x.max(0), (x + w as i32).min(self.width));
+        let (y0, y1) = (y.max(0), (y + h as i32).min(self.height));
+        for py in y0..y1 {
+            let row = (py * self.width) as usize;
+            for dst in &mut self.pixels[row + x0 as usize..row + x1.max(x0) as usize] {
+                for c in 0..4 {
+                    dst[c] = src[c].saturating_add(mul(dst[c], inv));
+                }
+            }
+        }
+    }
+}
+
+fn mul(a: u8, b: u8) -> u8 {
+    ((u16::from(a) * u16::from(b) + 127) / 255) as u8
 }
 
 #[cfg(test)]
@@ -165,10 +197,11 @@ mod tests {
     fn text_alpha_is_applied() {
         let mut renderer = TextRenderer::new("sans-serif", Lang::Eng);
         for alpha in [0x40, 0x80, 0xff] {
-            let mut pixmap = Pixmap::new(200, 40).unwrap();
+            let mut data = vec![0u8; 200 * 40 * 4];
+            let mut canvas = Canvas::new(&mut data, 200, 40);
             let color = cosmic_text::Color::rgba(255, 255, 255, alpha);
-            renderer.draw_line(&mut pixmap, "Activate", color, 24.0, 0.0, 0.0);
-            let max = pixmap.pixels().iter().map(|p| p.alpha()).max().unwrap();
+            renderer.draw_line(&mut canvas, "Activate", color, 24.0, 0.0, 0.0);
+            let max = data.as_chunks::<4>().0.iter().map(|p| p[3]).max().unwrap();
             assert_eq!(max, alpha, "альфа цвета {alpha:#x}");
         }
     }
